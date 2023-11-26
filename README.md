@@ -2,6 +2,7 @@
 
 
 Aquí encontramos un trabajo realizado para la materia estadística espacial de la Maestría en Estadística en la Universidad de Buenos Aires. Aquí podemos ver muchos ejemplos en R de cómo se puede tratar con datos espaciales georreferenciados para realizar análisis estadísticos.
+En [ESTADISTICA_ESPACIAL.Rmd](ESTADISTICA_ESPACIAL.Rmd) encontramos el código de R utilizado.
 
 # Primera parte: Estimación de riesgo relativo de accidentes de motos y autos
 
