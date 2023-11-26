@@ -1,0 +1,376 @@
+---
+title: "Trabajo Final Estadística Espacial"
+author: "Ian Bounos"
+date: '2022-06-07'
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+library(terra)
+library(sf)
+library(tmap)
+library(tidyverse) 
+library(readxl)
+library(dplyr)
+library(tidyselect)
+library(maptools)
+library(raster)
+library(spatstat)
+library(tidyr)
+library(readxl)
+library(leaflet)
+
+```
+
+Primero cargamos los datos de los siniestros de CABA
+
+```{r}
+Victimas_siniestros_2015_2018 <- read_excel("C:/Users/ian bounos/Downloads/Victimas_siniestros_2015-2018.xlsx")
+dim(Victimas_siniestros_2015_2018)
+View(Victimas_siniestros_2015_2018)
+```
+Tenemos 33234 Observaciones de 30 Variables
+Limpiamos datos que tienen NA en coordenadas Geográficas
+
+```{r}
+
+## Quito NAs de coordenadas
+Siniestros = Victimas_siniestros_2015_2018
+v = which(is.na(Siniestros$x))
+dim(Siniestros)
+Siniestros = Siniestros[-v, ]
+head(Siniestros)
+```
+
+```{r}
+
+### Transformo en sf y visualizo
+Siniestros.sf <- Siniestros %>% st_as_sf(coords = c("x", "y"), crs = 4326)
+Siniestros.sf
+leaflet(Siniestros.sf)%>% addTiles()%>% addCircleMarkers(radius=0.1)
+```
+
+En primer lugar, Filtramos por automovil y moto
+
+```{r}
+Siniestros2 <- Siniestros %>% 
+  # Filtro por automóvil y motos
+  filter( 
+          tipo %in% c("automovil","moto")
+         ) %>% dplyr::select(tipo,x,y) %>%mutate(tipo = as.factor(tipo)) %>%na.omit()
+Siniestros2
+
+## Veo datos descriptivos
+       
+table(Siniestros2$tipo)
+table(Siniestros2$tipo)/length(Siniestros2$tipo)
+
+Siniestros2.sf <-  Siniestros2%>% st_as_sf(coords = c("x", "y"), crs = 4326)
+
+tmap_mode('view') + tm_shape(Siniestros2.sf) + tm_dots(col = "tipo", palette="RdYlBu", stretch.palette = TRUE,size = 0.05,shape =21,style="cont")
+```
+
+Visualizamos
+
+```{r}
+Siniestrosmoto <- Siniestros %>% 
+  ### Me quedo con los que son moto
+  filter( 
+  
+        tipo %in% c("moto")
+         ) %>% dplyr::select(tipo,x,y) %>%mutate(tipo = as.factor(tipo)) %>%na.omit()
+
+### Grafico con ggplot
+ggplot(Siniestrosmoto, aes(x = x, y = y)) + 
+  coord_equal() + 
+  xlab('Longitude') + 
+  ylab('Latitude') + 
+  stat_density2d(aes(fill = ..level..), alpha = .5,
+                 h = .05, n = 300,
+                 geom = "polygon", data = Siniestrosmoto) + 
+  scale_fill_viridis_c() + 
+  theme(legend.position = 'none')
+```
+
+```{r}
+Siniestrosauto <- Siniestros %>% 
+  # Me quedo con automoviles
+  filter( 
+  
+        tipo %in% c("automovil")
+         ) %>% dplyr::select(tipo,x,y) %>%mutate(tipo = as.factor(tipo)) %>%na.omit()
+
+## Grafico con ggplot
+ggplot(Siniestrosauto, aes(x = x, y = y)) + 
+  coord_equal() + 
+  xlab('Longitude') + 
+  ylab('Latitude') + 
+  stat_density2d(aes(fill = ..level..), alpha = .5,
+                 h = .05, n = 300,
+                 geom = "polygon", data = Siniestrosauto) + 
+  scale_fill_viridis_c() + 
+  theme(legend.position = 'none')
+```
+Armamos regresión logistica sin covariables
+
+$\log(P(Y_i =1)/P(Y_i=0))= \alpha+l(x_i)+\epsilon_i$
+
+
+```{r}
+### Armo una regresión logística con interacciones de orden 3 
+
+
+base.tipo<-Siniestros2 %>% dplyr::select(x,y,tipo) %>% mutate(tipo=as.factor(tipo))
+base.tipo
+table(base.tipo$tipo)
+prop.table(table(base.tipo$tipo))
+
+
+require(splines)
+logi<-glm(tipo ~ poly(x,3)*poly(y,3),data=base.tipo,family = "binomial")
+summary(logi)
+
+```
+
+Hago seleccion de modelos
+
+```{r}
+#### Selecciono el "mejor modelo" en varias direcciones segun criterio AIC
+step(logi,direction="both")
+```
+
+Hacemos capsula convexa de los siniestros para graficar regresion logística 
+
+```{r}
+# prediccion en grilla
+cant<-100
+grilla<-expand.grid(x=seq(min(base.tipo$x),max(base.tipo$x),length.out = cant),y=seq(min(base.tipo$y),max(base.tipo$y),length.out = cant))
+pred<-predict(logi,newdata=grilla,type="response")
+# creo un raster nuevo y vacio
+require(raster)
+cant.filcol<-cant # finura de la grilla por lado
+ras<-raster(nrows=cant.filcol, ncols=cant.filcol, xmn=min(base.tipo$x), xmx=max(base.tipo$x),ymn=min(base.tipo$y),ymx=max(base.tipo$y))
+# RASTERIZACION 
+
+ras.tipo<-raster::rasterize(grilla,ras,field=pred,fun=median) 
+# base de siniestros como sf
+sin.sf <- Siniestros2 %>% st_as_sf(coords = c("x", "y"), crs = 4326)
+# capsula convexa de siniestros CABA
+sin.sf.unidos<-st_union(sin.sf)
+capsula<-st_convex_hull(sin.sf.unidos)
+```
+
+```{r}
+#Grafico capsula
+plot(capsula)
+```
+
+```{r}
+# Uso una MASCARA para recortar el area de observacion
+ras.tipo.mask<- raster::mask(ras.tipo,as_Spatial(capsula))
+valores<-raster::values(ras.tipo.mask)
+summary(valores)
+# Grafico del raster final
+colores <- c('red', 'blue', 'green') # Paleta de colores
+at <- seq(min(valores,na.rm = T),max(valores,na.rm = T),length.out = 20) # puntos de corte de categorias
+cb <- colorBin(palette = colores, bins = at, domain = at,na.color="#00000000") # colores
+leaflet() %>% addTiles() %>% addRasterImage(ras.tipo.mask,opacity = 0.75,colors = cb) %>% addLegend(pal = cb, values = at) # graf leaflet + raster + leyenda
+
+```
+
+Cambia esto si diferenciamos día/noche??
+
+
+```{r}
+SiniestrosDia <- Siniestros %>% 
+  filter( 
+  #   periodo %in% c(2017,2018),
+  #  Por lo que me gustaría poder controlar ::
+    #causa == "homicidio",
+    momento == "Noche",
+        tipo %in% c("automovil","moto")
+         ) %>% dplyr::select(tipo,x,y) %>%mutate(tipo = as.factor(tipo)) %>%na.omit()
+table(SiniestrosDia$tipo)/length(SiniestrosDia$tipo)
+
+SiniestrosDia.sf <-  SiniestrosDia%>% st_as_sf(coords = c("x", "y"), crs = 4326)
+
+
+
+base.tipo<-SiniestrosDia%>%dplyr::select(x,y,tipo) %>% mutate(tipo=as.factor(tipo))
+base.tipo
+table(base.tipo$tipo)
+prop.table(table(base.tipo$tipo))
+
+
+logi<-glm(tipo ~ poly(x,3)*poly(y,3),data=base.tipo,family = "binomial")
+summary(logi)
+#prediccion en grilla
+cant<-200
+grilla<-expand.grid(x=seq(min(base.tipo$x),max(base.tipo$x),length.out = cant),y=seq(min(base.tipo$y),max(base.tipo$y),length.out = cant))
+pred<-predict(logi,newdata=grilla,type="response")
+
+# creo un raster nuevo y vacio
+require(raster)
+cant.filcol<-cant # finura de la grilla por lado
+ras<-raster(nrows=cant.filcol, ncols=cant.filcol, xmn=min(base.tipo$x), xmx=max(base.tipo$x),ymn=min(base.tipo$y),ymx=max(base.tipo$y))
+# RASTERIZACION 
+# raster con prob de PH
+ras.tipo<-raster::rasterize(grilla,ras,field=pred,fun=median)
+# Uso una MASCARA para recortar el area de observacion
+ras.tipo.mask<- raster::mask(ras.tipo,as_Spatial(capsula))
+valores<-raster::values(ras.tipo.mask)
+summary(valores)
+# Grafico del raster final
+
+leaflet() %>% addTiles() %>% addRasterImage(ras.tipo.mask,opacity = 0.75,colors = cb) %>% addLegend(pal = cb, values = at) # graf leaflet + raster + leyenda
+
+```
+
+```{r}
+Siniestrosauxdia <- Siniestros %>% 
+  # Filtro por automóvil y motos
+  filter( 
+          tipo %in% c("automovil","moto"),
+          momento=="Dia"
+         ) %>% dplyr::select(tipo,x,y,momento)%>%mutate(tipo = as.factor(tipo))
+
+table(Siniestrosauxdia$tipo)/length(Siniestrosauxdia$tipo)
+
+Siniestrosauxnoche <- Siniestros %>% 
+  # Filtro por automóvil y motos
+  filter( 
+          tipo %in% c("automovil","moto"),
+          momento=="Noche"
+         ) %>% dplyr::select(tipo,x,y,momento)%>%mutate(tipo = as.factor(tipo))
+
+table(Siniestrosauxnoche$tipo)/length(Siniestrosauxnoche$tipo)
+```
+
+
+
+
+Esto parece sugerir usar como covariable una dummy del momento del día o, lo que sería mejor, calcularlas por separado para día y noche como acabamos de hacer. Hacemos solamente momento sin interaccion con el polinomio porque si no nos quedan demasiadas variables
+
+
+```{r}
+Siniestros4 <- Siniestros %>% 
+  # Filtro por automóvil y motos
+  filter( 
+          tipo %in% c("automovil","moto")
+         ) %>% dplyr::select(tipo,x,y,momento) %>%mutate(tipo = as.factor(tipo)) %>%mutate(momento = as.factor(momento)) %>%na.omit()
+
+
+logi<-glm(tipo ~ poly(x,3)*poly(y,3)+momento,data=Siniestros4,family = "binomial")
+summary(logi)
+
+```
+Consideramos con interacción pero tomando polinomios de grado 2
+
+```{r}
+Siniestros4 <- Siniestros %>% 
+  # Filtro por automóvil y motos
+  filter( 
+          tipo %in% c("automovil","moto")
+         ) %>% dplyr::select(tipo,x,y,momento) %>%mutate(tipo = as.factor(tipo)) %>%mutate(momento = as.factor(momento)) %>%na.omit()
+Siniestros4
+
+logi<-glm(tipo ~ poly(x,3)*poly(y,3)*momento,data=Siniestros4,family = "binomial")
+summary(logi)
+
+```
+
+Mejora notablemente si diferenciamos día/noche desde la perspectiva de la deviance.
+
+
+
+
+
+
+2da Parte
+
+Queremos usar paradas.de.colectivo como variable Proxy del flujo de tránsito
+
+
+
+```{r}
+
+## Cargo paradas de colectivo
+paradas.de.colectivo <- read.csv("C:/Users/ian bounos/Downloads/paradas-de-colectivo.csv")
+paradas = paradas.de.colectivo
+names(paradas)[4:5]=c("y","x")
+paradas = paradas[,c(1,4,5)]
+paradas[,1] = rep(1,nrow(paradas) )
+paradas.sf <- paradas %>% st_as_sf(coords = c("x", "y"), crs = 4326)
+plot(paradas.sf)
+leaflet(paradas.sf)%>% addTiles()%>% addCircleMarkers(radius=0.2)
+
+```
+
+```{r}
+
+##Recortamos aquellas que no están en CABA
+
+d = (st_distance(capsula,paradas.sf))
+d =as.numeric(d)
+paradas$stop_id = d
+paradas = paradas[paradas$stop_id==0,]
+paradas.sf <- paradas %>% st_as_sf(coords = c("x", "y"), crs = 4326)
+leaflet(paradas.sf)%>% addTiles()%>% addCircleMarkers(radius=0.2)
+
+```
+
+Grafico intensidad  de paradas (Estimador indirecto de flujo)
+
+```{r}
+
+p.sf.utm <- st_transform(paradas.sf, 32619) # Necesitamos proyectar  a UTM
+p.sp  <- as(p.sf.utm, "Spatial")      # Creamos objeto espacial
+p.ppp <- as(p.sp, "ppp")              # Creamos objeto ppp
+class(p.ppp)
+
+capsula.utm <-  st_transform(capsula, 32619) # Proyecto a UTM
+capsula.sp <- as(capsula.utm,"Spatial")
+capsula.owin <- as(capsula.sp,"owin")
+Window(p.ppp)=capsula.owin
+
+K1 <- density(p.ppp,sigma=1000)
+plot(K1, main=NULL, las=1)
+contour(K1, add=TRUE)
+```
+
+
+Estimamos intensidad de siniestros (Todos, incluyendo los que no son autos ni motos)
+```{r}
+### Buscamos intensidad de siniestros
+
+Siniestros3 <- Siniestros %>% dplyr::select(x,y) %>%na.omit()
+
+Siniestros3.sf <-  Siniestros3%>% st_as_sf(coords = c("x", "y"), crs = 4326)
+
+sin.sf.utm <- st_transform(Siniestros3.sf, 32619) 
+sin.sp  <- as(sin.sf.utm, "Spatial")     
+sin.ppp <- as(sin.sp, "ppp")              #
+Window(sin.ppp) = capsula.owin
+
+
+
+K2 <- density(sin.ppp,kernel="gaussian",sigma=400)
+plot(K2)
+contour(K2, add=TRUE)
+```
+Podemos observar como se quita la intensidad en zonas con mucha circulación
+```{r}
+plot(K2/K1, main=NULL, las=1)
+contour(K2/K1, add=TRUE)
+```
+
+
+
+
+
+
+
